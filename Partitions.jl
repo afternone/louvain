@@ -74,3 +74,5 @@ function renumber_communities!{V}(partition::Partition{V})
         end
     end
 end
+
+1/2
