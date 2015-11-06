@@ -1,91 +1,24 @@
-type Group{V}
+using Graphs
+import Graphs.graph
+
+type FlowGroup{V}
     nodes::Set{V}
     inner_prob::Float64
     exit_prob::Float64
 end
 
-type Partition{V}
+type FlowPartition{V} <: AbstractPartition{V}
     flowgraph::FlowGraph{V}
     membership::Vector{Int}
-    community::Dict{Int,Group{V}}
+    community::Dict{Int,FlowGroup{V}}
     total_exit_prob::Float64
 end
 
-"update partition based on the membership vector."
-function update_partition!{V}(partition::Partition{V}, membership::Vector{Int})
-    maximum(membership) ≤ num_vertices(partition.flowgraph.graph) || error("maximum(membership) must less than num_vertices(graph)")
-    minimum(membership) > 0 || error("value of membership must be positive integer")
-
-    # update membership vector and communities
-    partition.community = Dict{Int,Group{V}}()
-    for u in vertices(partition.flowgraph.graph)
-        u_idx = vertex_index(u, partition.flowgraph.graph)
-        partition.membership[u_idx] = membership[u_idx]
-        comm_idx = membership[u_idx]
-        if haskey(partition.community, comm_idx)
-            push!(partition.community[comm_idx].nodes, u)
-            partition.community[comm_idx].inner_prob += partition.flowgraph.visit_prob[u_idx]
-            for e in out_edges(u, partition.flowgraph.graph)
-                e_idx = edge_index(e, partition.flowgraph.graph)
-                v = target(e, partition.flowgraph.graph)
-                v_idx = vertex_index(v, partition.flowgraph.graph)
-                if !in(v, partition.community[comm_idx].nodes)
-                    partition.community[comm_idx].exit_prob += partition.flowgraph.trans_prob[e_idx]
-                else
-                    partition.community[comm_idx].exit_prob -= partition.flowgraph.trans_prob[e_idx]
-                end
-            end
-        else
-            exit_prob = 0.0
-            for e in out_edges(u, partition.flowgraph.graph)
-                e_idx = edge_index(e, partition.flowgraph.graph)
-                exit_prob += partition.flowgraph.trans_prob[e_idx]
-            end
-            partition.community[comm_idx] = Group(Set(u), partition.flowgraph.visit_prob[u_idx], exit_prob)
-        end
-    end
-    partition.total_exit_prob = sum([partition.community[i].exit_prob for i in keys(partition.community)])
-end
-
-"Initialise partition based on the membership vector."
-function init_partition{V}(fg::FlowGraph{V}, membership::Vector{Int})
-    maximum(membership) ≤ num_vertices(fg.graph) || error("maximum(membership) must less than num_vertices(graph)")
-    minimum(membership) > 0 || error("value of membership must be positive integer")
-    community = Dict{Int,Group{V}}()
-    for u in vertices(fg.graph)
-        u_idx = vertex_index(u, fg.graph)
-        comm_idx = membership[u_idx]
-        if haskey(community, comm_idx)
-            push!(community[comm_idx].nodes, u)
-            community[comm_idx].inner_prob += fg.visit_prob[u_idx]
-            for e in out_edges(u, fg.graph)
-                e_idx = edge_index(e, fg.graph)
-                v = target(e, fg.graph)
-                v_idx = vertex_index(v, fg.graph)
-                if !in(v, community[comm_idx].nodes)
-                    community[comm_idx].exit_prob += fg.trans_prob[e_idx]
-                else
-                    community[comm_idx].exit_prob -= fg.trans_prob[e_idx]
-                end
-            end
-        else
-            exit_prob = 0.0
-            for e in out_edges(u, fg.graph)
-                e_idx = edge_index(e, fg.graph)
-                exit_prob += fg.trans_prob[e_idx]
-            end
-            community[comm_idx] = Group(Set(u), fg.visit_prob[u_idx], exit_prob)
-        end
-    end
-    total_exit_prob = sum([community[i].exit_prob for i in keys(community)])
-    Partition(fg, membership, community, total_exit_prob)
-end
-
-"Initialise partition"
-function init_partition{V}(fg::FlowGraph{V})
+# construction
+function flow_partition{V}(fg::FlowGraph{V})
     n = num_vertices(fg.graph)
     membership = collect(1:n)
-    groups = Array(Group{V}, n)
+    groups = Array(FlowGroup{V}, n)
 
     for u in vertices(fg.graph)
         u_idx = vertex_index(u, fg.graph)
@@ -94,32 +27,133 @@ function init_partition{V}(fg::FlowGraph{V})
             e_idx = edge_index(e, fg.graph)
             exit_prob += fg.trans_prob[e_idx]
         end
-        groups[u_idx] = Group(Set(u), fg.visit_prob[u_idx], exit_prob)
+        groups[u_idx] = FlowGroup(Set(u), fg.visit_prob[u_idx], exit_prob)
     end
 
-    community = Dict{Int,Group{V}}(zip(membership, groups))
-    total_exit_prob = sum([community[i].exit_prob for i in keys(community)])
-    Partition(fg, membership, community, total_exit_prob)
+    community = Dict{Int,FlowGroup{V}}(zip(membership, groups))
+
+    total_exit_prob = 0.0
+    for group in values(community)
+        total_exit_prob += group.exit_prob
+    end
+
+    FlowPartition(fg, membership, community, total_exit_prob)
+end
+
+function flow_partition{V,T<:Real}(g::AbstractGraph{V}, weights::Vector{T})
+    fg = flow_graph(g, weights)
+    flow_partition(fg)
+end
+
+function flow_partition{V}(fg::FlowGraph{V}, membership::Vector{Int})
+    maximum(membership) ≤ num_vertices(fg.graph) || error("maximum(membership) must less than num_vertices(g)")
+    minimum(membership) > 0 || error("value of membership must be positive integer")
+
+    community = Dict{Int,FlowGroup{V}}()
+
+    for u in vertices(g)
+        u_idx = vertex_index(u, g)
+        comm_idx = membership[u_idx]
+        if haskey(community, comm_idx)
+            push!(community[comm_idx].nodes, u)
+            community[comm_idx].inner_prob += fg.visit_prob[u_idx]
+            for e in out_edges(u, g)
+                e_idx = edge_index(e, g)
+                v = target(e, g)
+                v_idx = vertex_index(v, g)
+                if !in(v, community[comm_idx].nodes)
+                    community[comm_idx].exit_prob += fg.trans_prob[e_idx]
+                else
+                    community[comm_idx].exit_prob -= fg.trans_prob[e_idx]
+                end
+            end
+        else
+            exit_prob = 0.0
+            for e in out_edges(u, g)
+                e_idx = edge_index(e, g)
+                exit_prob += fg.trans_prob[e_idx]
+            end
+            community[comm_idx] = FlowGroup(Set(u), fg.visit_prob[u_idx], exit_prob)
+        end
+    end
+
+    total_exit_prob = 0.0
+    for group in values(community)
+        total_exit_prob += group.exit_prob
+    end
+
+    FlowPartition(fg, membership, community, total_exit_prob)
+end
+
+function flow_partition{V,T<:Real}(g::AbstractGraph{V}, weights::Vector{T}, membership::Vector{Int})
+    maximum(membership) ≤ num_vertices(g) || error("maximum(membership) must less than num_vertices(g)")
+    minimum(membership) > 0 || error("value of membership must be positive integer")
+
+    fg = flow_graph(g, weights)
+    flow_partition(fg, membership)
+end
+
+# require interface
+graph{V}(fp::FlowPartition{V}) = fp.flowgraph.graph
+membership{V}(fp::FlowPartition{V}) = fp.membership
+membership{V}(fp::FlowPartition{V}, u::V) = fp.membership[vertex_index(u, fp.flowgraph.graph)]
+
+# mutation
+"update partition based on the membership vector"
+function update_partition!{V}(fp::FlowPartition{V}, membership::Vector{Int})
+    maximum(membership) ≤ num_vertices(fp.flowgraph.graph) || error("maximum(membership) must less than num_vertices(graph)")
+    minimum(membership) > 0 || error("value of membership must be positive integer")
+
+    # update membership vector and communities
+    fp.community = Dict{Int,FlowGroup{V}}()
+    for u in vertices(fp.flowgraph.graph)
+        u_idx = vertex_index(u, fp.flowgraph.graph)
+        fp.membership[u_idx] = membership[u_idx]
+        comm_idx = membership[u_idx]
+        if haskey(fp.community, comm_idx)
+            push!(fp.community[comm_idx].nodes, u)
+            fp.community[comm_idx].inner_prob += fp.flowgraph.visit_prob[u_idx]
+            for e in out_edges(u, fp.flowgraph.graph)
+                e_idx = edge_index(e, fp.flowgraph.graph)
+                v = target(e, fp.flowgraph.graph)
+                v_idx = vertex_index(v, fp.flowgraph.graph)
+                if !in(v, fp.community[comm_idx].nodes)
+                    fp.community[comm_idx].exit_prob += fp.flowgraph.trans_prob[e_idx]
+                else
+                    fp.community[comm_idx].exit_prob -= fp.flowgraph.trans_prob[e_idx]
+                end
+            end
+        else
+            exit_prob = 0.0
+            for e in out_edges(u, fp.flowgraph.graph)
+                e_idx = edge_index(e, fp.flowgraph.graph)
+                exit_prob += fp.flowgraph.trans_prob[e_idx]
+            end
+            fp.community[comm_idx] = FlowGroup(Set(u), fp.flowgraph.visit_prob[u_idx], exit_prob)
+        end
+    end
+
+    fp.total_exit_prob = 0.0
+    for group in values(fp.community)
+        fp.total_exit_prob += group.exit_prob
+    end
 end
 
 "Renumber the communities so that they are numbered 0,...,q-1 where q is the number of communities."
-function renumber_communities!{V}(partition::Partition{V})
-    csizes = Int[length(partition.community[i].nodes) for i in keys(partition.community)]
+function renumber_communities!{V}(fp::FlowPartition{V})
+    csizes = Int[length(fp.community[i].nodes) for i in keys(fp.community)]
     perm_idx = sortperm(csizes, rev=true)
-    partition.community = Dict{Int, Group{V}}(zip(enumerate(collect(values(partition.community))[perm_idx])))
-    for (i, group) in partition.community
+    fp.community = Dict{Int, FlowGroup{V}}(zip(enumerate(collect(values(fp.community))[perm_idx])))
+    for (i, group) in fp.community
         for u in group.nodes
-            u_idx = vertex_index(u, partition.flowgraph.graph)
-            partition.membership[u_idx] = i
+            u_idx = vertex_index(u, fp.flowgraph.graph)
+            fp.membership[u_idx] = i
         end
     end
 end
 
-<<<<<<< HEAD
-1/2
-=======
 "Move a node to a new community and update the partition, this also removes any empty communities."
-function move_node!{V}(partition::Partition{V}, u::V, new_comm::Int)
+function move_node!{V}(partition::FlowPartition{V}, u::V, new_comm::Int)
     haskey(partition.community, new_comm) || error("partition has no community $new_comm")
 
     u_idx = vertex_index(u, partition.flowgraph.graph)
@@ -171,7 +205,7 @@ end
 "Read new communities from coarser partition assuming that the community
  represents a node in the coarser partition (with the same index as the
  community number)."
-function from_coarser_partition!{V}(partition::Partition{V}, coarser_partition::Partition)
+function from_coarser_partition!{V}(partition::FlowPartition{V}, coarser_partition::FlowPartition{V})
     for u in vertices(partition.flowgraph.graph)
         u_idx = vertex_index(u, partition.flowgraph.graph)
         # what is the community of the node
@@ -186,14 +220,14 @@ function from_coarser_partition!{V}(partition::Partition{V}, coarser_partition::
 end
 
 "Read new partition from another partition."
-function from_partition!{V}(partition::Partition{V}, other_partition::Partition{V})
+function from_partition!{V}(partition::FlowPartition{V}, other_partition::FlowPartition{V})
     #Assign the membership of every node in the supplied partition to the one in this partition
     partition.membership[:] = other_partition.membership[:]
     update_partition!(partition, partition.membership)
 end
 
 "Calculate what is the total weight going from/to a node to a community."
-function weight_to_comm{V}(partition::Partition{V}, u::V, comm::Int)
+function weight_to_comm{V}(partition::FlowPartition{V}, u::V, comm::Int)
     total_weight = 0.0
     u_idx = vertex_index(u, partition.flowgraph.graph)
     u_comm = partition.membership[u_idx]
@@ -208,10 +242,10 @@ function weight_to_comm{V}(partition::Partition{V}, u::V, comm::Int)
     end
     total_weight
 end
-weight_from_comm{V}(partition::Partition{V}, u::V, comm::Int) = weight_to_comm(partition, u, comm)
+weight_from_comm{V}(partition::FlowPartition{V}, u::V, comm::Int) = weight_to_comm(partition, u, comm)
 
 "get neighbor communities of node u"
-function get_neigh_comms{V}(partition::Partition{V}, u::V)
+function get_neigh_comms{V}(partition::FlowPartition{V}, u::V)
     neigh_comms = Set{Int}()
     for v in out_neighbors(u, partition.flowgraph.graph)
         v_idx = vertex_index(v, partition.flowgraph.graph)
@@ -225,7 +259,7 @@ plogp(x) = x > 0.0 ? x*log(x) : 0.0
 plogp(xs::Vector{Float64}) = Float64[plogp(x) for x in xs]
 
 "Returns the difference in average decribe length if we move a node to a new community"
-function diff_move{V}(partition::Partition{V}, u::V, new_comm::Int)
+function diff_move{V}(partition::FlowPartition{V}, u::V, new_comm::Int)
     u_idx = vertex_index(u, partition.flowgraph.graph)
     old_comm = partition.membership[u_idx]
 
@@ -273,7 +307,7 @@ function diff_move{V}(partition::Partition{V}, u::V, new_comm::Int)
 end
 
 "Give the average decribe length of the partition."
-function quality{V}(partition::Partition{V})
+function quality{V}(partition::FlowPartition{V})
     L1 = plogp(partition.total_exit_prob)
     L2 = -2sum(plogp([partition.community[i].exit_prob for i in keys(partition.community)]))
     L3 = -sum(plogp(partition.flowgraph.visit_prob))
@@ -281,4 +315,3 @@ function quality{V}(partition::Partition{V})
 
     L1 + L2 + L3 + L4
 end
->>>>>>> 6631e2857ec651081111d6301f56fcd4335355c3

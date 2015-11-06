@@ -8,7 +8,7 @@ type FlowGraph{V}
 end
 
 "construct undirected FlowGraph{V} from undirected AbstractGraph{V}"
-function flowgraph{V,T<:Real}(graph::AbstractGraph{V}, weights::Vector{T}=ones(num_edges(graph)))
+function flow_graph{V,T<:Real}(graph::AbstractGraph{V}, weights::Vector{T}=ones(num_edges(graph)))
     FlowGraph(graph, visit_prob_undirected(graph, weights), trans_prob_undirected(graph, weights))
 end
 
