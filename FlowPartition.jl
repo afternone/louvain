@@ -97,8 +97,50 @@ end
 graph{V}(fp::FlowPartition{V}) = fp.flowgraph.graph
 membership{V}(fp::FlowPartition{V}) = fp.membership
 membership{V}(fp::FlowPartition{V}, u::V) = fp.membership[vertex_index(u, fp.flowgraph.graph)]
+community{V}(fp::FlowPartition{V}) = keys(fp.community)
+is_right_direction{V}(fp::FlowPartition{V}, quality, new_quality) = new_quality < quality
+still_running{V}(fp::FlowPartition{V}, once_diff, ϵ) = once_diff < -ϵ
 
 # mutation
+"update partition when the membership vector change"
+function update_partition!{V}(fp::FlowPartition{V})
+    maximum(fp.membership) ≤ num_vertices(fp.flowgraph.graph) || error("maximum(membership) must less than num_vertices(graph)")
+    minimum(fp.membership) > 0 || error("value of membership must be positive integer")
+
+    # update membership vector and communities
+    fp.community = Dict{Int,FlowGroup{V}}()
+    for u in vertices(fp.flowgraph.graph)
+        u_idx = vertex_index(u, fp.flowgraph.graph)
+        comm_idx = fp.membership[u_idx]
+        if haskey(fp.community, comm_idx)
+            push!(fp.community[comm_idx].nodes, u)
+            fp.community[comm_idx].inner_prob += fp.flowgraph.visit_prob[u_idx]
+            for e in out_edges(u, fp.flowgraph.graph)
+                e_idx = edge_index(e, fp.flowgraph.graph)
+                v = target(e, fp.flowgraph.graph)
+                v_idx = vertex_index(v, fp.flowgraph.graph)
+                if !in(v, fp.community[comm_idx].nodes)
+                    fp.community[comm_idx].exit_prob += fp.flowgraph.trans_prob[e_idx]
+                else
+                    fp.community[comm_idx].exit_prob -= fp.flowgraph.trans_prob[e_idx]
+                end
+            end
+        else
+            exit_prob = 0.0
+            for e in out_edges(u, fp.flowgraph.graph)
+                e_idx = edge_index(e, fp.flowgraph.graph)
+                exit_prob += fp.flowgraph.trans_prob[e_idx]
+            end
+            fp.community[comm_idx] = FlowGroup(Set(u), fp.flowgraph.visit_prob[u_idx], exit_prob)
+        end
+    end
+
+    fp.total_exit_prob = 0.0
+    for group in values(fp.community)
+        fp.total_exit_prob += group.exit_prob
+    end
+end
+
 "update partition based on the membership vector"
 function update_partition!{V}(fp::FlowPartition{V}, membership::Vector{Int})
     maximum(membership) ≤ num_vertices(fp.flowgraph.graph) || error("maximum(membership) must less than num_vertices(graph)")
@@ -216,14 +258,14 @@ function from_coarser_partition!{V}(partition::FlowPartition{V}, coarser_partiti
         u_comm_level2 = coarser_partition.membership[u_comm_level1]
         partition.membership[u_idx] = u_comm_level2
     end
-    update_partition!(partition, partition.membership)
+    update_partition!(partition)
 end
 
 "Read new partition from another partition."
 function from_partition!{V}(partition::FlowPartition{V}, other_partition::FlowPartition{V})
     #Assign the membership of every node in the supplied partition to the one in this partition
     partition.membership[:] = other_partition.membership[:]
-    update_partition!(partition, partition.membership)
+    update_partition!(partition)
 end
 
 "Calculate what is the total weight going from/to a node to a community."
@@ -285,9 +327,6 @@ function diff_move{V}(partition::FlowPartition{V}, u::V, new_comm::Int)
             end
         end
         δtotal_exit_prob = δexit_prob_old_comm + δexit_prob_new_comm
-        #println("*******")
-        #println(δtotal_exit_prob, ", ", δexit_prob_old_comm, ", ", δexit_prob_new_comm)
-        #println(partition.total_exit_prob)
 
         δL1 = plogp(partition.total_exit_prob + δtotal_exit_prob) - plogp(partition.total_exit_prob)
         δL2 = -2(plogp(partition.community[old_comm].exit_prob + δexit_prob_old_comm) - plogp(partition.community[old_comm].exit_prob))
@@ -296,10 +335,6 @@ function diff_move{V}(partition::FlowPartition{V}, u::V, new_comm::Int)
             plogp(partition.community[old_comm].exit_prob + partition.community[old_comm].inner_prob)
         δL5 = plogp(partition.community[new_comm].exit_prob + δexit_prob_new_comm + partition.community[new_comm].inner_prob + partition.flowgraph.visit_prob[u_idx]) -
             plogp(partition.community[new_comm].exit_prob + partition.community[new_comm].inner_prob)
-
-        #println("############")
-        #println("1: ", partition.community[new_comm].exit_prob + δexit_prob_new_comm + partition.community[new_comm].inner_prob + partition.flowgraph.visit_prob[u_idx])
-        println("3: ", plogp(partition.community[new_comm].exit_prob + δexit_prob_new_comm + partition.community[new_comm].inner_prob + partition.flowgraph.visit_prob[u_idx]))
         δL = δL1 + δL2 + δL3 + δL4 + δL5
     end
 
@@ -314,4 +349,53 @@ function quality{V}(partition::FlowPartition{V})
     L4 = sum(plogp([partition.community[i].exit_prob+partition.community[i].inner_prob for i in keys(partition.community)]))
 
     L1 + L2 + L3 + L4
+end
+
+"""
+Creates a graph with communities as node and links as weights between communities.
+
+The weight of the edges in the new graph is simply the sum of the weight
+of the edges between the communities. The size of a node in the new graph
+is simply the size of the community in the old graph.
+"""
+function collapse_partition{V}(partition::FlowPartition{V})
+    num_comm = length(partition.community)
+    collapsed_trans_prob = Dict{Int,Float64}[]
+    for i=1:num_comm
+        push!(collapsed_trans_prob, Dict{Int,Float64}())
+    end
+
+    for e in edges(partition.flowgraph.graph)
+        e_idx = edge_index(e, partition.flowgraph.graph)
+        u = source(e, partition.flowgraph.graph)
+        v = target(e, partition.flowgraph.graph)
+        u_idx = vertex_index(u, partition.flowgraph.graph)
+        v_idx = vertex_index(v, partition.flowgraph.graph)
+        u_comm = partition.membership[u_idx]
+        v_comm = partition.membership[v_idx]
+
+        # we just skip self loop
+        if u_comm < v_comm
+            if haskey(collapsed_trans_prob[u_comm], v_comm)
+                collapsed_trans_prob[u_comm][v_comm] += partition.flowgraph.trans_prob[e_idx]
+            else
+                collapsed_trans_prob[u_comm][v_comm] = partition.flowgraph.trans_prob[e_idx]
+            end
+        end
+    end
+
+    graph = simple_graph(num_comm, is_directed=false)
+    graph_trans_prob = Float64[]
+    graph_visit_prob = Array(Float64, num_comm)
+
+    for u_comm=1:num_comm
+        graph_visit_prob[u_comm] = partition.community[u_comm].inner_prob
+        for (v_comm, trans_prob) in collapsed_trans_prob[u_comm]
+            add_edge!(graph, u_comm, v_comm)
+            push!(graph_trans_prob, trans_prob)
+        end
+    end
+
+    fg = FlowGraph(graph, graph_visit_prob, graph_trans_prob)
+    flow_partition(fg)
 end
