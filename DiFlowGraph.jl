@@ -15,6 +15,11 @@ function diflowgraph{V,T<:Real}(graph::AbstractGraph{V}, weights::Vector{T}=ones
     DiFlowGraph(graph, τ, visit_prob, trans_prob)
 end
 
+function diflow_graph{V,T<:Real}(graph::AbstractGraph{V}, trans_prob::Vector{T}; τ=0.15)
+    visit_prob = visit_prob_directed(graph, trans_prob, τ=τ, ϵ=sqrt(eps()), N=1000)
+    DiFlowGraph(graph, τ, visit_prob, trans_prob)
+end
+
 "calculate relative transform probability of edges in a directed graphs"
 function trans_prob_directed{V,T<:Real}(graph::AbstractGraph{V}, weights::Vector{T}=ones(num_edges(graph)))
     @graph_requires graph vertex_list vertex_map adjacency_list edge_map
