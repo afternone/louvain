@@ -1,3 +1,19 @@
+using Graphs
+
+type MGraph{V}
+    graph::AbstractGraph{V}
+    node_sizes::Vector{Int}
+    edge_weights::Vector{Float64}
+    strength_in::Vector{Float64}
+    strength_out::Vector{Float64}
+    node_self_weights::Vector{Float64}
+    total_weight::Float64
+    total_size::Int
+    correct_self_loops::Bool
+    density::Float64
+end
+
+
 function mgraph{V,T}(g::AbstractGraph{V}, edge_weights::Vector{T}=ones(num_edges(g)),
                      node_sizes::Vector{Int}=ones(Int,num_vertices(g)), correct_self_loops::Bool=false)
     length(edge_weights) == num_edges(g) || error("wrong edge_weights length")

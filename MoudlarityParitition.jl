@@ -16,6 +16,122 @@ type ModularityPartition{V} <: AbstractPartition{V}
     total_possible_edges_in::Int
 end
 
+function collapse_partition1{V}(partition::MPartition{V})
+    num_comm = length(partition.community)
+    collapsed_trans_prob = Dict{Int,Float64}[]
+    for i=1:num_comm
+        push!(collapsed_trans_prob, Dict{Int,Float64}())
+    end
+
+    for e in edges(partition.mgraph.graph)
+        e_idx = edge_index(e, partition.mgraph.graph)
+        u = source(e, partition.mgraph.graph)
+        v = target(e, partition.mgraph.graph)
+        u_idx = vertex_index(u, partition.mgraph.graph)
+        v_idx = vertex_index(v, partition.mgraph.graph)
+        u_comm = partition.membership[u_idx]
+        v_comm = partition.membership[v_idx]
+
+        w = partition.mgraph.edge_weights[e_idx]
+        if haskey(collapsed_trans_prob[u_comm], v_comm)
+            collapsed_trans_prob[u_comm][v_comm] += w
+        else
+            collapsed_trans_prob[u_comm][v_comm] = w
+        end
+    end
+
+    graph = simple_graph(num_comm, is_directed=is_directed(partition.mgraph.graph))
+    graph_edge_weights = Float64[]
+    graph_node_sizes = Array(Int, num_comm)
+
+    for u_comm=1:num_comm
+        graph_node_sizes[u_comm] = partition.community[u_comm].csize
+        for (v_comm, w) in collapsed_trans_prob[u_comm]
+            add_edge!(graph, u_comm, v_comm)
+            push!(graph_edge_weights, w)
+        end
+    end
+
+    mpartition(graph, graph_edge_weights, graph_node_sizes, partition.mgraph.correct_self_loops)
+end
+
+function move_node1!{V}(mp::MPartition{V}, u::V, new_comm::Int)
+    mg = mp.mgraph
+    g = mg.graph
+    u_idx = vertex_index(u,g)
+    node_size = mg.node_sizes[u_idx]
+    old_comm = mp.membership[u_idx]
+    old_csize = mp.community[old_comm].csize
+    new_csize = mp.community[new_comm].csize
+    mp.total_possible_edges_in_all_comms += 2.0*node_size*(new_csize - old_csize + node_size)/(2.0 - Float64(is_directed(g)))
+
+    # remove from old community
+    delete!(mp.community[old_comm].nodes, u)
+    mp.community[old_comm].csize -= node_size
+
+    # add to new community
+    push!(mp.community[new_comm].nodes, u)
+    mp.community[new_comm].csize += node_size
+
+    for e in out_edges(u,g)
+        e_idx = edge_index(e,g)
+        v = target(e,g)
+        v_idx = vertex_index(v,g)
+        v_comm = mp.membership[v_idx]
+        w = mg.edge_weights[e_idx]
+        int_weight = w/(is_directed(g) ? 1.0 : 2.0)
+        if in(v, mp.community[old_comm].nodes)
+            mp.community[old_comm].weight_in += w
+            mp.community[old_comm].weight_inner -= int_weight
+            mp.total_weight_in_all_comms -= int_weight
+        else
+            mp.community[old_comm].weight_out -= w
+        end
+        if in(v, mp.community[new_comm].nodes)
+            mp.community[new_comm].weight_in -= w
+            mp.community[new_comm].weight_inner += int_weight
+            mp.total_weight_in_all_comms += int_weight
+        else
+            mp.community[new_comm].weight_out += w
+        end
+    end
+
+    for e in in_edges(u,g)
+        e_idx = edge_index(e,g)
+        v = source(e,g)
+        v_idx = vertex_index(v,g)
+        v_comm = mp.membership[v_idx]
+        w = mg.edge_weights[e_idx]
+        int_weight = w/(is_directed(g) ? 1.0 : 2.0)
+        if in(v, mp.community[old_comm].nodes)
+            mp.community[old_comm].weight_out += w
+            mp.community[old_comm].weight_inner -= int_weight
+            mp.total_weight_in_all_comms -= int_weight
+        else
+            mp.community[old_comm].weight_in -= w
+        end
+        if in(v, mp.community[new_comm].nodes)
+            mp.community[new_comm].weight_out -= w
+            mp.community[new_comm].weight_inner += int_weight
+            mp.total_weight_in_all_comms += int_weight
+        else
+            mp.community[new_comm].weight_in += w
+        end
+    end
+
+    # if the old community is empty after remove node u, we remove it
+    if isempty(mp.community[old_comm].nodes)
+        delete!(mp.community, old_comm)
+    end
+
+    # update the membership vector
+    mp.membership[u_idx] = new_comm
+end
+
+
+
+
+
 # construction
 function modularity_partition{V}(mg::ModularityGraph{V})
     g = mg.graph
