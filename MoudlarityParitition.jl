@@ -131,6 +131,8 @@ function renumber_communities!{V}(mp::ModularityPartition{V})
 end
 
 
+
+
 # TO DO
 function move_node!{V}(mp::ModularityPartition{V}, u::V, new_comm::Int)
     haskey(mp.community, new_comm) || error("partition has no community $new_comm")
